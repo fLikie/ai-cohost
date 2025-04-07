@@ -2,6 +2,7 @@ package ui
 
 import (
 	"cohost/internal/audio"
+	"cohost/internal/common"
 	"cohost/internal/config"
 	"fmt"
 	"fyne.io/fyne/v2"
@@ -14,19 +15,26 @@ import (
 )
 
 var (
-	chatBox         *widget.Label
-	aiResponseBox   *widget.Label
-	gameEntry       *widget.Entry
-	SelectedGame    string
-	aiModelSelector *widget.Select
-	voiceSelector   *widget.Select
-	volumeSlider    *widget.Slider
-	volumeLabel     *widget.Label // Отображает текущую громкость
-	botRunning      = false
-	aiModels        = []string{"OpenAI", "DeepSeek"} // Доступные модели
+	chatBox           *widget.Label
+	aiResponseBox     *widget.Label
+	gameEntry         *widget.Entry
+	SelectedGame      string
+	aiModelSelector   *widget.Select
+	voiceSelector     *widget.Select
+	volumeSlider      *widget.Slider
+	volumeLabel       *widget.Label // Отображает текущую громкость
+	botRunning        = false
+	aiModels          = []string{"OpenAI", "DeepSeek"} // Доступные модели
+	chatHistoryWindow fyne.Window
+	chatHistoryText   *widget.Entry
 )
 
-func CreateGUI(twichBot func(), audioPlayer func()) {
+func CreateGUI(
+	twichBot func(),
+	audioPlayer func(),
+	listenVoiceCommands func(),
+	listenTikTokListener func(),
+) {
 	log.Println("Создание GUI...")
 	myApp := app.New()
 	myWindow := myApp.NewWindow("AI Соведущий")
@@ -34,8 +42,8 @@ func CreateGUI(twichBot func(), audioPlayer func()) {
 	log.Println("Инициализация UI элементов...")
 	log.Println("✅ Пользователи загружены!")
 
-	keys := make([]string, 0, len(audio.Voices))
-	for k := range audio.Voices {
+	keys := make([]string, 0, len(common.Voices))
+	for k := range common.Voices {
 		keys = append(keys, k)
 	}
 
@@ -52,7 +60,7 @@ func CreateGUI(twichBot func(), audioPlayer func()) {
 	volumeSlider.SetValue(config.Settings.VolumeLevel) // 50% громкости = стандартное значение
 
 	// 📢 Label для отображения текущей громкости
-	volumeLabel = widget.NewLabel("🔊 Громкость: 50%")
+	volumeLabel = widget.NewLabel(fmt.Sprintf("🔊 Громкость: %d%%", int(config.Settings.VolumeLevel*100)))
 
 	volumeSlider.OnChanged = func(value float64) {
 		config.Settings.VolumeLevel = value
@@ -86,6 +94,8 @@ func CreateGUI(twichBot func(), audioPlayer func()) {
 		log.Println("🎮 Выбрана игра:", SelectedGame)
 		log.Println("🚀 AI Соведущий запущен с голосом:", config.Settings.SelectedVoice)
 		go twichBot()
+		go listenTikTokListener()
+		listenVoiceCommands()
 		audioPlayer()
 		SetChatText(fmt.Sprintf("🤖 Соведущий активен! Играем в: %s", SelectedGame))
 	})
@@ -121,6 +131,10 @@ func CreateGUI(twichBot func(), audioPlayer func()) {
 	})
 	aiModelSelector.SetSelected(config.Settings.SelectedAiModel) // 🎯 Загружаем сохранённую модель
 
+	historyButton := widget.NewButton("📜 История чата", func() {
+		openChatHistoryWindow(myApp)
+	})
+
 	myWindow.SetContent(container.NewVBox(
 		widget.NewLabelWithStyle("🔴 AI Соведущий для стримов", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 		widget.NewLabel("Выберите голос:"),
@@ -131,6 +145,7 @@ func CreateGUI(twichBot func(), audioPlayer func()) {
 		gameEntry,
 		settingsButton,
 		startButton,
+		historyButton,
 		chatContainer,
 		aiResponseContainer,
 
@@ -166,9 +181,19 @@ func openSettingsWindow(app fyne.App) {
 	})
 	ttsSelector.SetSelected(config.Settings.SelectedTTS) // Загружаем последнее сохраненное значение
 
+	wakeWordEntry := widget.NewEntry()
+	wakeWordEntry.SetPlaceHolder("Например: пятница")
+	wakeWordEntry.SetText(config.Settings.WakeWord)
+
+	tiktokEntry := widget.NewEntry()
+	tiktokEntry.SetPlaceHolder("Tiktok username")
+	tiktokEntry.SetText(config.Settings.TikTokUsername)
+
 	// Кнопка сохранения настроек
 	saveButton := widget.NewButton("💾 Сохранить", func() {
 		config.Settings.TwitchChannel = twitchChannelEntry.Text
+		config.Settings.TikTokUsername = tiktokEntry.Text
+		config.Settings.WakeWord = wakeWordEntry.Text
 		config.SaveSettings() // 💾 Сохраняем в файл
 		settingsWindow.Close()
 		log.Println("✅ Twitch-канал сохранён:", config.Settings.TwitchChannel)
@@ -182,11 +207,40 @@ func openSettingsWindow(app fyne.App) {
 		aiModelSelector,
 		widget.NewLabel("Выбор Синтезатора голоса:"),
 		ttsSelector,
+		widget.NewLabel("Выбор кодового слова для активации соведущего"),
+		wakeWordEntry,
+		widget.NewLabel("Выбор канала тикток"),
+		tiktokEntry,
 		saveButton,
 	))
 
 	settingsWindow.Resize(fyne.NewSize(400, 150))
 	settingsWindow.Show()
+}
+
+func openChatHistoryWindow(app fyne.App) {
+	chatHistoryWindow = app.NewWindow("🗨 История чата")
+	chatHistoryText = widget.NewMultiLineEntry()
+	chatHistoryText.SetMinRowsVisible(20)
+	chatHistoryText.Wrapping = fyne.TextWrapWord
+	chatHistoryText.Disable() // только для чтения
+
+	scroll := container.NewVScroll(chatHistoryText)
+
+	chatHistoryWindow.SetContent(scroll)
+	chatHistoryWindow.Resize(fyne.NewSize(500, 300))
+	chatHistoryWindow.Show()
+}
+
+func AppendToChatHistory(text string) {
+	if chatHistoryText != nil {
+		chatHistoryText.SetText(chatHistoryText.Text + "\n" + text)
+	}
+}
+
+func SetUsersText(text string) {
+	formattedText := strings.ReplaceAll(text, "\n", " ") // Убираем лишние переносы
+	chatBox.SetText(formattedText)
 }
 
 func SetChatText(text string) {

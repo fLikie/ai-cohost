@@ -1,9 +1,9 @@
 package main
 
 import (
-	"cohost/internal/ai"
 	"cohost/internal/audio"
 	"cohost/internal/config"
+	"cohost/internal/response"
 	"cohost/internal/storage"
 	"cohost/internal/stream"
 	gui "cohost/internal/ui"
@@ -51,7 +51,7 @@ func processMessageQueue() {
 		log.Println("🤖 Генерируем общий ответ для:", combinedMessages)
 
 		// 📢 Генерируем AI-ответ
-		ai.GenerateAIResponse("чат", combinedMessages)
+		//ai.GenerateAIResponse("чат", combinedMessages)
 	}
 }
 
@@ -76,7 +76,7 @@ func main() {
 	config.LoadSettings() // 📂 Загружаем голос и громкость
 	storage.LoadUsers()   // 📂 Загружаем пользователей
 	storage.LoadChatHistory()
-	gui.CreateGUI(stream.StartTwitchBot, audio.StartAudioPlayer)
+	gui.CreateGUI(stream.StartTwitchBot, audio.StartAudioPlayer, response.ListenVoiceCommands, stream.StartTikTokListener)
 
 	log.Println("Программа завершена.")
 }

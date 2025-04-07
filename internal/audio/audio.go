@@ -2,28 +2,24 @@ package audio
 
 import (
 	"bytes"
+	"cohost/internal/common"
 	"cohost/internal/config"
 	"fmt"
 	"github.com/faiface/beep"
 	"github.com/faiface/beep/effects"
 	"github.com/faiface/beep/mp3"
 	"github.com/faiface/beep/speaker"
+	"github.com/faiface/beep/wav"
 	"github.com/go-resty/resty/v2"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
+	"regexp"
 	"time"
 )
 
 const AudioQueueMax = 10
-
-var Voices = map[string]string{
-	"Sarah":         "EXAVITQu4vr4xnSDxMaL",
-	"Victoria":      "FZGeNF7bE3syeQOynDKC",
-	"Oleg Krugliak": "m2gtxNsYBaIRqPBA5vU5",
-	"Denophine":     "M1CSR3PJBsfWU6ZquG3C",
-}
 
 var audioQueue = make(chan []byte, AudioQueueMax) // Очередь звуков (до 10 сообщений)
 var initialized = false
@@ -50,50 +46,67 @@ func QueueAudio(audioData []byte) {
 }
 
 // 🔊 Функция воспроизведения с регулировкой громкости
-func playAudio(mp3Data []byte) {
-	if len(mp3Data) == 0 {
-		log.Println("❌ Ошибка: Пустой MP3-файл!")
+func playAudio(audioData []byte) {
+	if len(audioData) == 0 {
+		log.Println("❌ Ошибка: Пустой аудиофайл!")
 		return
 	}
 
-	reader := io.NopCloser(bytes.NewReader(mp3Data))
+	reader := bytes.NewReader(audioData)
+	buf := make([]byte, 12)
+	if _, err := reader.Read(buf); err != nil {
+		log.Println("❌ Не удалось прочитать заголовок аудиофайла:", err)
+		return
+	}
+	reader.Seek(0, io.SeekStart) // Сброс к началу
 
-	// ✅ Декодируем MP3
-	streamer, format, err := mp3.Decode(reader)
+	var streamer beep.StreamSeekCloser
+	var format beep.Format
+	var err error
+
+	switch {
+	case bytes.HasPrefix(buf, []byte("RIFF")):
+		// WAV-файл
+		log.Println("📀 Определён формат: WAV")
+		streamer, format, err = wav.Decode(reader)
+	case bytes.HasPrefix(buf, []byte("\xFF\xFB")) || bytes.HasPrefix(buf, []byte("\x49\x44\x33")):
+		// MP3-файл (начинается с FF FB или ID3)
+		log.Println("📀 Определён формат: MP3")
+		streamer, format, err = mp3.Decode(reader)
+	default:
+		log.Println("❌ Неизвестный формат аудио")
+		saveMP3Debug(audioData)
+		return
+	}
+
 	if err != nil {
-		log.Println("❌ Ошибка декодирования MP3:", err)
-		saveMP3Debug(mp3Data)
+		log.Println("❌ Ошибка декодирования:", err)
+		saveMP3Debug(audioData)
 		return
 	}
 
-	// ✅ Инициализируем динамики только один раз
 	if !initialized {
 		speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
 		initialized = true
 	}
 
-	// 🔥 Если `volumeControl` уже существует, заменяем `Streamer`
 	if volumeControl != nil {
-		speaker.Lock() // Блокируем поток перед обновлением
+		speaker.Lock()
 		volumeControl.Streamer = streamer
-		speaker.Unlock() // Разблокируем поток
+		speaker.Unlock()
 	} else {
-		// 🔥 Создаём новый контроллер громкости
 		volumeControl = &effects.Volume{
 			Streamer: streamer,
 			Base:     2,
-			Volume:   volumeLevel, // Используем глобальную переменную громкости
+			Volume:   (config.Settings.VolumeLevel * 2) - 2,
 			Silent:   false,
 		}
 	}
 
-	// ✅ Воспроизводим с корректным завершением потока
 	done := make(chan struct{})
 	speaker.Play(beep.Seq(volumeControl, beep.Callback(func() {
 		close(done)
 	})))
-
-	// ✅ Блокируем поток, пока звук не отыграет
 	<-done
 	log.Println("🎵 Аудио воспроизведение завершено!")
 }
@@ -122,7 +135,7 @@ func UpdateVolume(newVolume float64) {
 // 🔊 Генерация аудио через ElevenLabs
 func GenerateVoice(text string) {
 	client := resty.New()
-	voiceID := Voices[config.Settings.SelectedVoice] // Получаем ID выбранного голоса
+	voiceID := common.Voices[config.Settings.SelectedVoice] // Получаем ID выбранного голоса
 	url := fmt.Sprintf("https://api.elevenlabs.io/v1/text-to-speech/%s", voiceID)
 
 	elevenLabsKey := os.Getenv("ELEVENLABS_KEY")
@@ -141,6 +154,31 @@ func GenerateVoice(text string) {
 
 	if err != nil {
 		log.Println("Ошибка ElevenLabs:", err)
+		return
+	}
+
+	log.Println("✅ MP3 успешно получен, размер:", len(resp.Body()), "байт, добавляем в очередь")
+	QueueAudio(resp.Body()) // Добавляем звук в очередь
+}
+
+func cleanTextForTTS(text string) string {
+	re := regexp.MustCompile(`[^\p{L}\p{N}\p{P}\p{Z}]`) // убираем эмодзи и странные символы
+	return re.ReplaceAllString(text, "")
+}
+
+func GenerateSileroVoice(text string) {
+	client := resty.New()
+	url := "http://185.21.142.27/speak"
+
+	cleaned := cleanTextForTTS(text)
+
+	resp, err := client.R().
+		SetHeader("Content-Type", "application/json").
+		SetBody([]string{cleaned}).
+		Post(url)
+
+	if err != nil {
+		log.Println("Ошибка Silero TTS:", err)
 		return
 	}
 

@@ -12,6 +12,8 @@ type Config struct {
 	VolumeLevel     float64 `json:"volume_level"`
 	SelectedAiModel string  `json:"selected_ai_model"`
 	SelectedTTS     string  `json:"selected_tts"`
+	WakeWord        string  `json:"wake_word"`
+	TikTokUsername  string  `json:"tiktok_username"`
 }
 
 var Settings Config
@@ -30,6 +32,10 @@ func LoadSettings() {
 	if err := json.Unmarshal(file, &Settings); err != nil {
 		log.Println("❌ Ошибка загрузки настроек:", err)
 		return
+	}
+
+	if Settings.WakeWord == "" {
+		Settings.WakeWord = "пятница"
 	}
 }
 

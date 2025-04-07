@@ -1,8 +1,8 @@
 package stream
 
 import (
-	"cohost/internal/ai"
 	"cohost/internal/config"
+	"cohost/internal/response"
 	storage "cohost/internal/storage"
 	gui "cohost/internal/ui"
 	"fmt"
@@ -29,14 +29,15 @@ func StartTwitchBot() {
 		text := message.Message
 		msg := fmt.Sprintf("💬 Twitch %s: %s", message.User.DisplayName, message.Message)
 		fmt.Println(msg)
-		gui.SetChatText(msg)
+		gui.SetUsersText(msg)
+		gui.AppendToChatHistory(msg)
 
 		storage.UpdateUser(username, text)
 
 		// Проверяем, представился ли он
 		storage.DetectName(username, text)
 
-		response := ai.GenerateAIResponse(text, username)
+		response := response.GenerateAIResponse(text, username)
 		gui.SetChatText(fmt.Sprintf("🤖 AI: %s", response))
 	})
 
